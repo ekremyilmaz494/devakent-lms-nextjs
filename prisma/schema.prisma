@@ -1,0 +1,417 @@
+// Devakent LMS - Prisma Schema
+// Multi-tenant SaaS architecture for hospital training management
+
+generator client {
+  provider   = "prisma-client-js"
+  engineType = "binary"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================================================
+// ENUMS
+// ============================================================================
+
+enum UserRole {
+  SUPER_ADMIN // Platform yöneticisi
+  ADMIN       // Hastane yöneticisi
+  STAFF       // Personel
+}
+
+enum TrainingStatus {
+  DRAFT       // Taslak
+  PUBLISHED   // Yayında
+  ARCHIVED    // Arşivlenmiş
+}
+
+enum EnrollmentStatus {
+  NOT_STARTED // Başlamadı
+  IN_PROGRESS // Devam ediyor
+  COMPLETED   // Tamamlandı
+  FAILED      // Başarısız
+}
+
+enum ExamStatus {
+  PENDING     // Beklemede
+  IN_PROGRESS // Devam ediyor
+  COMPLETED   // Tamamlandı
+}
+
+enum CertificateStatus {
+  PENDING     // Onay bekliyor
+  APPROVED    // Onaylandı
+  REJECTED    // Reddedildi
+}
+
+enum SubscriptionStatus {
+  TRIAL       // Deneme sürümü
+  ACTIVE      // Aktif
+  EXPIRING    // Süresi yaklaşan (30 gün kala)
+  EXPIRED     // Süresi dolmuş
+  SUSPENDED   // Askıya alınmış
+  CANCELLED   // İptal edilmiş
+}
+
+// ============================================================================
+// MODELS
+// ============================================================================
+
+model Hospital {
+  id        String   @id @default(uuid())
+  name      String
+  code      String?  @unique // Hastane kodu
+  city      String
+  address   String?
+  phone     String?
+  logo      String?  // Logo URL
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  users         User[]
+  trainings     Training[]
+  auditLogs     AuditLog[]
+  notifications Notification[]
+  subscription  HospitalSubscription?
+
+  @@index([isActive])
+  @@index([code])
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  password     String   // bcrypt hash
+  name         String
+  role         UserRole
+  avatarUrl    String?
+  phone        String?
+  tcNo         String?  @unique // TC Kimlik Numarası
+  department   String?
+  title        String?  // Ünvan (örn: Hemşire, Doktor, Teknisyen)
+  isActive     Boolean  @default(true)
+  hospitalId   String?  // null for SUPER_ADMIN
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  lastLoginAt  DateTime?
+
+  // Relations
+  hospital            Hospital?             @relation(fields: [hospitalId], references: [id], onDelete: Cascade)
+  enrollments         TrainingEnrollment[]
+  assignments         TrainingAssignment[]
+  examAttempts        ExamAttempt[]
+  certificates        Certificate[]
+  auditLogs           AuditLog[]
+  sentNotifications   Notification[]        @relation("SentNotifications")
+  receivedNotifications Notification[]      @relation("ReceivedNotifications")
+
+  @@index([email])
+  @@index([hospitalId])
+  @@index([role])
+}
+
+model Training {
+  id          String         @id @default(uuid())
+  title       String
+  description String
+  thumbnail   String?
+  category    String?        // Eğitim kategorisi
+  passingScore Int           @default(70) // Geçme puanı
+  maxAttempts Int           @default(3)   // Maksimum deneme hakkı
+  examDuration Int           @default(30)  // Sınav süresi (dakika)
+  startDate   DateTime                     // Başlangıç tarihi
+  endDate     DateTime                     // Bitiş tarihi
+  status      TrainingStatus @default(DRAFT)
+  hospitalId  String
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  publishedAt DateTime?
+  deletedAt   DateTime?      // Soft delete
+  createdBy   String?        // Kim oluşturdu
+
+  // Relations
+  hospital     Hospital             @relation(fields: [hospitalId], references: [id], onDelete: Cascade)
+  enrollments  TrainingEnrollment[]
+  videos       TrainingVideo[]
+  questions    Question[]
+  assignments  TrainingAssignment[]
+  certificates Certificate[]
+  examAttempts ExamAttempt[]
+
+  @@index([hospitalId])
+  @@index([status])
+  @@index([startDate, endDate])
+}
+
+// Eğitim Videoları
+model TrainingVideo {
+  id              String   @id @default(uuid())
+  trainingId      String
+  title           String
+  description     String?
+  videoUrl        String   // S3 URL
+  videoKey        String   // S3 Key
+  durationSeconds Int      // Saniye cinsinden
+  sortOrder       Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  deletedAt       DateTime? // Soft delete
+
+  // Relations
+  training Training @relation(fields: [trainingId], references: [id], onDelete: Cascade)
+  progress VideoProgress[]
+
+  @@index([trainingId])
+  @@index([sortOrder])
+}
+
+// Video İzleme İlerlemesi
+model VideoProgress {
+  id             String   @id @default(uuid())
+  assignmentId   String
+  videoId        String
+  watchedSeconds Int      @default(0)
+  totalSeconds   Int      @default(0)
+  watchPercentage Int     @default(0)
+  completed      Boolean  @default(false)
+  lastWatchedAt  DateTime @default(now())
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  // Relations
+  assignment TrainingAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  video      TrainingVideo      @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  @@unique([assignmentId, videoId])
+  @@index([assignmentId])
+  @@index([videoId])
+  @@index([completed])
+}
+
+// Sorular
+model Question {
+  id           String   @id @default(uuid())
+  trainingId   String
+  questionText String
+  questionType String   @default("multiple_choice") // multiple_choice, true_false
+  points       Int      @default(10)
+  sortOrder    Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relations
+  training Training         @relation(fields: [trainingId], references: [id], onDelete: Cascade)
+  options  QuestionOption[]
+
+  @@index([trainingId])
+  @@index([sortOrder])
+}
+
+// Soru Şıkları
+model QuestionOption {
+  id         String   @id @default(uuid())
+  questionId String
+  optionText String
+  isCorrect  Boolean  @default(false)
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  // Relations
+  question Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@index([questionId])
+}
+
+// Eğitim Atamaları
+model TrainingAssignment {
+  id             String   @id @default(uuid())
+  trainingId     String
+  userId         String
+  status         String   @default("assigned") // assigned, in_progress, ready_for_exam, passed, failed, locked
+  currentAttempt Int      @default(0)
+  maxAttempts    Int      @default(3)
+  assignedBy     String?
+  assignedAt     DateTime @default(now())
+  startedAt      DateTime? // Video izlemeye başlama
+  completedAt    DateTime?
+  deletedAt      DateTime? // Soft delete
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  // Relations
+  training      Training        @relation(fields: [trainingId], references: [id], onDelete: Cascade)
+  user          User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  videoProgress VideoProgress[]
+  examAttempts  ExamAttempt[]
+
+  @@unique([trainingId, userId])
+  @@index([trainingId])
+  @@index([userId])
+  @@index([status])
+}
+
+model TrainingEnrollment {
+  id          String           @id @default(uuid())
+  userId      String
+  trainingId  String
+  status      EnrollmentStatus @default(NOT_STARTED)
+  progress    Int              @default(0) // 0-100 yüzde
+  score       Int?             // Final puanı
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  // Relations
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  training Training @relation(fields: [trainingId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, trainingId])
+  @@index([userId])
+  @@index([trainingId])
+  @@index([status])
+}
+
+// Exam modelini kaldırdık - artık Question ve QuestionOption kullanıyoruz
+
+model ExamAttempt {
+  id              String     @id @default(uuid())
+  assignmentId    String     // TrainingAssignment ile ilişki
+  trainingId      String
+  userId          String
+  attemptNumber   Int        @default(1)
+  score           Float?     // Sınav puanı (0-100)
+  status          ExamStatus @default(PENDING)
+  answers         Json?      // [{questionId, selectedOptionId, isCorrect}]
+  isPassed        Boolean    @default(false)
+  startedAt       DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  // Relations
+  assignment TrainingAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  training   Training           @relation(fields: [trainingId], references: [id], onDelete: Cascade)
+  user       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([assignmentId])
+  @@index([trainingId])
+  @@index([userId])
+  @@index([status])
+}
+
+model Certificate {
+  id            String            @id @default(uuid())
+  userId        String
+  trainingId    String
+  certificateNo String            @unique
+  status        CertificateStatus @default(PENDING)
+  approvedBy    String?
+  approvedAt    DateTime?
+  rejectedReason String?
+  pdfUrl        String?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  // Relations
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  training Training @relation(fields: [trainingId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([trainingId])
+  @@index([status])
+  @@index([certificateNo])
+}
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  userId      String
+  hospitalId  String?
+  action      String   // CREATE_TRAINING, UPDATE_USER, DELETE_STAFF, etc.
+  entityType  String   // Training, User, Hospital, etc.
+  entityId    String
+  changes     Json?    // {before: {...}, after: {...}}
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime @default(now())
+
+  // Relations
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  hospital Hospital? @relation(fields: [hospitalId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([hospitalId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+model Notification {
+  id         String   @id @default(uuid())
+  title      String
+  message    String
+  type       String   // INFO, WARNING, SUCCESS, ERROR
+  isRead     Boolean  @default(false)
+  senderId   String?  // null = system notification
+  receiverId String
+  hospitalId String?
+  link       String?
+  createdAt  DateTime @default(now())
+  readAt     DateTime?
+
+  // Relations
+  sender   User?     @relation("SentNotifications", fields: [senderId], references: [id], onDelete: SetNull)
+  receiver User      @relation("ReceivedNotifications", fields: [receiverId], references: [id], onDelete: Cascade)
+  hospital Hospital? @relation(fields: [hospitalId], references: [id], onDelete: Cascade)
+
+  @@index([receiverId])
+  @@index([hospitalId])
+  @@index([isRead])
+  @@index([createdAt])
+}
+
+// ============================================================================
+// SUBSCRIPTION MODELS
+// ============================================================================
+
+model SubscriptionPlan {
+  id          String   @id @default(uuid())
+  name        String   @unique // Başlangıç, Profesyonel, Kurumsal
+  description String?
+  price       Float    // Aylık fiyat (TL)
+  maxUsers    Int      // Maksimum kullanıcı sayısı
+  maxTrainings Int     // Maksimum eğitim sayısı
+  features    String[] // Özellikler listesi
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  subscriptions HospitalSubscription[]
+
+  @@index([isActive])
+}
+
+model HospitalSubscription {
+  id           String             @id @default(uuid())
+  hospitalId   String             @unique
+  planId       String
+  status       SubscriptionStatus @default(TRIAL)
+  startDate    DateTime           @default(now())
+  endDate      DateTime
+  trialEndDate DateTime?          // Deneme sürümü bitiş tarihi
+  lastPaymentDate DateTime?
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  // Relations
+  hospital Hospital         @relation(fields: [hospitalId], references: [id], onDelete: Cascade)
+  plan     SubscriptionPlan @relation(fields: [planId], references: [id])
+
+  @@index([hospitalId])
+  @@index([planId])
+  @@index([status])
+  @@index([endDate])
+}
