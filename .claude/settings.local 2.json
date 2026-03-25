@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(npx tsc --noEmit src/app/admin/audit-logs/page.tsx src/app/admin/notifications/page.tsx src/app/admin/reports/page.tsx)"
-    ],
-    "deny": [],
-    "ask": []
-  }
-}
